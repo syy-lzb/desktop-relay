@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+/app/
+/local-history/
+/migration/
+*.log
+*.log.previous
+settings.json
+settings.json.tmp
+*.pdb
+*.zip
+.vs/
+.idea/
+TestResults/
+test-tls-fixture.json

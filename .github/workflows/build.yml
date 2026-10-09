@@ -1,0 +1,32 @@
+name: Windows build and protocol tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Core protocol regression
+        run: dotnet run --project src/Tests/DesktopRelay.Tests.csproj -c Release
+      - name: Windows and Node proxy regression
+        shell: pwsh
+        run: |
+          $env:RELAY_TEST_NODE = (Get-Command node).Source
+          dotnet run --project src/WindowsTests/DesktopRelay.WindowsTests.csproj -c Release -- --offline
+      - name: Publish portable Windows build
+        run: dotnet publish src/App/DesktopRelay.App.csproj -c Release -r win-x64 --self-contained false -o app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DesktopRelay-win-x64
+          path: |
+            app/**
+            !app/**/*.pdb
