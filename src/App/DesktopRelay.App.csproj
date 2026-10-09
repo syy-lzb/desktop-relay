@@ -4,7 +4,7 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings><AssemblyName>DesktopRelay</AssemblyName>
     <ApplicationIcon>Assets/dragon.ico</ApplicationIcon>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Core/DesktopRelay.Core.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets/dragon.png" Condition="Exists('Assets/dragon.png')" /></ItemGroup>
