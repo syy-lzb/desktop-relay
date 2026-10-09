@@ -1,4 +1,4 @@
-<Window x:Class="DesktopRelay.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Desktop Relay" Width="304" Height="428" WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize" ShowInTaskbar="False">
+<Window x:Class="DesktopRelay.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Desktop Relay" Width="304" Height="454" WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize" ShowInTaskbar="False">
  <Grid Margin="6">
   <Border x:Name="Card" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="20" Padding="18">
    <Grid><Grid.RowDefinitions><RowDefinition Height="54"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -10,9 +10,10 @@
     <StackPanel Grid.Row="1">
      <TextBlock x:Name="StatusText" Text="入口未启动" FontSize="12" Margin="0,9,0,12" TextWrapping="Wrap"/>
      <TextBlock Text="连接方式" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,6"/>
-     <ComboBox x:Name="ModeBox" Height="32" SelectionChanged="ModeChanged" FontFamily="Microsoft YaHei" FontSize="13"><ComboBoxItem Content="当前系统代理"/><ComboBoxItem Content="自定义 HTTP 代理"/><ComboBoxItem Content="直连 / TUN"/></ComboBox>
+     <ComboBox x:Name="ModeBox" Height="32" SelectionChanged="ModeChanged" FontFamily="Microsoft YaHei" FontSize="13"><ComboBoxItem Content="自动检测代理"/><ComboBoxItem Content="自定义 HTTP 代理"/><ComboBoxItem Content="直连 / TUN"/></ComboBox>
      <TextBox x:Name="AddressBox" Height="32" Margin="0,8,0,0" Padding="8,6" FontFamily="Consolas" FontSize="13" BorderBrush="{StaticResource Line}" TextChanged="AddressChanged"/>
      <TextBlock x:Name="RouteNote" Text="读取系统代理，不固定软件或端口" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,6,0,6" TextWrapping="Wrap"/>
+     <Button x:Name="DiscoverButton" Content="重新自动检测" Click="DiscoverClick" ToolTip="只读识别代理进程的监听端口，选择后手动应用"/>
      <Button x:Name="ApplyButton" Content="应用到新连接" Click="ApplyClick"/>
      <Button x:Name="LaunchButton" Content="启动 Desktop" Background="#C47758" Foreground="White" BorderBrush="#C47758" Height="38" Margin="0,5,0,3" Click="LaunchClick"/>
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><Button x:Name="CheckButton" Content="检查链路" Click="CheckClick" Margin="0,3,3,3"/><Button Grid.Column="1" Content="诊断 / 设置" Click="DetailsClick" Margin="3,3,0,3"/></Grid>

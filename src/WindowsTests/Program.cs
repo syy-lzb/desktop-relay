@@ -14,6 +14,22 @@ foreach(var setting in new[]{(false,"127.0.0.1:6134"),(true,""),(true,"socks=127
     try{SystemProxy.Parse(setting.Item1,setting.Item2);}catch(InvalidOperationException){rejected=true;}catch(ArgumentException){rejected=true;}
     Assert(rejected,"disabled/unsupported proxy rejected");
 }
+var candidates = LocalProxyDiscovery.Parse("  TCP    127.0.0.1:7892    0.0.0.0:0    LISTENING    2072\n  TCP    0.0.0.0:6134    0.0.0.0:0    LISTENING    42\n  TCP    127.0.0.1:58466    0.0.0.0:0    LISTENING    2072\n  TCP    127.0.0.1:9000    0.0.0.0:0    LISTENING    1\n  TCP    127.0.0.1:7892    1.2.3.4:443    ESTABLISHED    2072", id => id == 2072 ? "FlyingBirdCore" : id == 42 ? "CloudFox" : "other", 58466);
+Assert(candidates.Count == 2 && candidates.Any(c => c.Address == "http://127.0.0.1:7892"), "discovery identifies proxy listeners and excludes relay, unrelated processes and established connections");
+var anchor = new CapsuleAnchor();
+anchor.Remember(1700, 950);
+var restored = anchor.Restore(1500, 550);
+Assert(restored == (1700d, 950d), "expansion clamping does not overwrite capsule anchor");
+anchor.Remember(100, 200);
+Assert(anchor.Restore(0, 0) == (100d,200d), "dragged capsule updates its return position");
+var attempted = new List<string>();
+var autoResult = await AutoProxy.ResolveAsync("http://127.0.0.1:6134", () => Task.FromResult(new List<LocalProxyCandidate>{new("http://127.0.0.1:7892", "FlyingBirdCore")}), address => { attempted.Add(address); return Task.FromResult(true); });
+Assert(autoResult.Count == 1 && attempted.SequenceEqual(new[]{"http://127.0.0.1:6134"}), "usable system proxy takes priority over local discovery");
+attempted.Clear();
+autoResult = await AutoProxy.ResolveAsync("http://127.0.0.1:6134", () => Task.FromResult(new List<LocalProxyCandidate>{new("http://127.0.0.1:7892", "FlyingBirdCore"),new("http://127.0.0.1:10808", "xray")}), address => { attempted.Add(address); return Task.FromResult(address.EndsWith(":7892")); });
+Assert(autoResult.Count == 1 && autoResult[0].Address.EndsWith(":7892"), "failed system and non HTTP listeners fall back to validated local proxy");
+autoResult = await AutoProxy.ResolveAsync(null, () => Task.FromResult(new List<LocalProxyCandidate>{new("http://127.0.0.1:7892", "FlyingBirdCore"),new("http://127.0.0.1:6134", "CloudFox")}), _ => Task.FromResult(true));
+Assert(autoResult.Count == 2, "multiple usable proxies preserved for user selection");
 string? original = Environment.GetEnvironmentVariable("HTTP_PROXY");
 Environment.SetEnvironmentVariable("HTTP_PROXY", "http://127.0.0.1:6134");
 Environment.SetEnvironmentVariable("ALL_PROXY", "socks5://127.0.0.1:1080");

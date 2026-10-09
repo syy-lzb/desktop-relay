@@ -30,6 +30,9 @@ public partial class MainWindow : Window
     private Forms.NotifyIcon? tray;
     private Icon? trayIcon;
     private bool initialized, exiting, applied, changed, launched, busy, entryReady;
+    private readonly CapsuleAnchor capsuleAnchor = new();
+    private Route? automaticRoute;
+    private bool detecting;
     private string systemFingerprint = "";
     private string view = "expanded";
     public MainWindow(bool preview)
@@ -41,7 +44,7 @@ public partial class MainWindow : Window
         App.Trace("Before XAML");
         InitializeComponent();
         App.Trace("After XAML");
-        ModeBox.SelectedIndex = Math.Clamp(settings.Mode, 0, 2);
+        ModeBox.SelectedIndex = 0;
         AddressBox.Text = settings.CustomProxy;
         initialized = true;
         Topmost = settings.Topmost;
@@ -100,7 +103,14 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { StatusText.Text = "入口未就绪"; Log(ex.Message); RouteNote.Text = ex.Message; await relay.StopAsync(); return; }
         systemFingerprint = SystemProxy.Fingerprint();
-        try { ApplySelected(); }
+        // Preserve the last explicit route while isolated probes run; probes never change live forwarding.
+        try
+        {
+            if (settings.Mode == 1) { relay.SwitchRoute(Route.ParseProxy(settings.CustomProxy)); applied = true; }
+            else if (settings.Mode == 2) { relay.SwitchRoute(new Route(RouteMode.Direct)); applied = true; }
+        }
+        catch (Exception ex) { Log("Saved route unavailable: " + ex.Message); }
+        try { await DetectAutomaticAsync(true); }
         catch (Exception ex) { StatusText.Text = "入口就绪 · 等待选择出口"; MiniStatus.Text = "待选择出口"; Log(ex.Message); RouteNote.Text = ex.Message; }
         timer.Tick += (_, _) => Tick(); timer.Start();
         await Task.CompletedTask;
@@ -156,7 +166,7 @@ public partial class MainWindow : Window
     {
         return ModeBox.SelectedIndex switch
         {
-            0 => SystemProxy.Read(),
+            0 => automaticRoute ?? throw new InvalidOperationException("自动检测尚未找到可用代理。"),
             1 => Route.ParseProxy(AddressBox.Text.Trim()),
             2 => new Route(RouteMode.Direct),
             _ => throw new InvalidOperationException("请选择连接方式。")
@@ -169,16 +179,20 @@ public partial class MainWindow : Window
         AddressBox.IsReadOnly = ModeBox.SelectedIndex != 1;
         try
         {
-            if (ModeBox.SelectedIndex == 0) { var route = SystemProxy.Read(); AddressBox.Text = Describe(route); RouteNote.Text = "读取 Windows 当前地址；变化后手动应用。"; }
+            if (ModeBox.SelectedIndex == 0) { AddressBox.Text = automaticRoute == null ? "等待自动检测" : Describe(automaticRoute); RouteNote.Text = "优先系统代理，再验证本地代理。"; }
             else if (ModeBox.SelectedIndex == 1) { AddressBox.Text = settings.CustomProxy; RouteNote.Text = "输入 HTTP / 混合代理入口，不填 VLESS 服务器。"; }
             else { AddressBox.Text = "由系统网络接管"; RouteNote.Text = "不会自动检测或启用 TUN。"; }
         }
-        catch (Exception ex) { AddressBox.Text = "未检测到静态代理"; RouteNote.Text = ex.Message; }
+        catch (Exception ex) { AddressBox.Text = "系统静态代理不可用"; RouteNote.Text = ex.Message + " 可点击发现本地代理。"; }
         changed = true;
         ApplyButton.Content = "应用到新连接";
         ApplyButton.IsEnabled = !preview && entryReady;
     }
-    private void ModeChanged(object sender, SelectionChangedEventArgs e) => RefreshSelection();
+    private async void ModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        RefreshSelection();
+        if (initialized && entryReady && !detecting && ModeBox.SelectedIndex == 0) await DetectAutomaticAsync(false);
+    }
     private void AddressChanged(object sender, TextChangedEventArgs e)
     {
         if (!initialized || ModeBox.SelectedIndex != 1) return;
@@ -197,7 +211,7 @@ public partial class MainWindow : Window
         if (settings.Mode == 1) settings.CustomProxy = AddressBox.Text.Trim();
         systemFingerprint = SystemProxy.Fingerprint();
         StatusText.Text = "入口就绪 · 出口未检测";
-        MiniStatus.Text = route.Mode == RouteMode.Direct ? "直连 / TUN · 未检测" : (ModeBox.SelectedIndex == 0 ? "系统代理 · 未检测" : "自定义代理 · 未检测");
+        MiniStatus.Text = route.Mode == RouteMode.Direct ? "直连 / TUN · 未检测" : (ModeBox.SelectedIndex == 0 ? "自动代理 · 未检测" : "自定义代理 · 未检测");
         MiniStatus.ToolTip = Describe(route);
         RouteNote.Text = route.Mode == RouteMode.Direct ? "直接连接，由系统网络决定路由。" : "已应用，后续新连接使用此地址。";
         ApplyButton.Content = "已应用"; ApplyButton.IsEnabled = false;
@@ -234,23 +248,95 @@ public partial class MainWindow : Window
     private void Tick()
     {
         UpdateProcessState();
-        if (ModeBox.SelectedIndex != 0) return;
+        if (busy || ModeBox.SelectedIndex != 0) return;
         string next = SystemProxy.Fingerprint();
         if (next != systemFingerprint)
         {
-            systemFingerprint = next; RefreshSelection();
+            systemFingerprint = next; automaticRoute = null; RefreshSelection();
+            _ = DetectAutomaticAsync(false);
             RouteNote.Text = "系统代理已变化。当前出口保持原值，请点击应用。";
             Log("系统代理变化，等待手动应用。");
         }
     }
+    private async Task<bool> ProbeCandidateAsync(string address)
+    {
+        try
+        {
+            using var handler = new HttpClientHandler { UseProxy = true, Proxy = new WebProxy(address), AllowAutoRedirect = false };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+            using var request = new HttpRequestMessage(HttpMethod.Head, "https://chatgpt.com/") { Version = HttpVersion.Version11, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            Log($"Automatic probe address={address} HTTP={(int)response.StatusCode}");
+            // HTTP 403 still proves a completed HTTPS exchange, not account or WebSocket availability.
+            return (int)response.StatusCode < 500;
+        }
+        catch (Exception ex)
+        {
+            for (Exception? cause = ex; cause != null; cause = cause.InnerException)
+                Log($"Automatic probe address={address} failed={cause.GetType().Name}: {cause.Message}");
+            return false;
+        }
+    }
+    private async Task DetectAutomaticAsync(bool applySingle)
+    {
+        if (preview || busy || detecting || !entryReady) return;
+        detecting = busy = true;
+        ModeBox.IsEnabled = AddressBox.IsEnabled = ApplyButton.IsEnabled = CheckButton.IsEnabled = DiscoverButton.IsEnabled = false;
+        StatusText.Text = "正在自动发现并验证代理…";
+        try
+        {
+            string? system = null;
+            try { var route = SystemProxy.Read(); if (!(route.Port == relay.Port && (route.Host == "127.0.0.1" || route.Host == "localhost"))) system = $"http://{route.Host}:{route.Port}"; }
+            catch (Exception ex) { Log("Automatic system proxy unavailable: " + ex.Message); }
+            var candidates = await AutoProxy.ResolveAsync(system, () => LocalProxyDiscovery.ReadAsync(relay.Port), ProbeCandidateAsync);
+            if (candidates.Count == 1)
+            {
+                automaticRoute = Route.ParseProxy(candidates[0].Address);
+                ModeBox.SelectedIndex = 0; RefreshSelection();
+                if (applySingle) ApplySelected();
+                StatusText.Text = applySingle ? "自动代理已应用 · HTTPS 有响应" : "已发现可用代理 · 等待应用";
+                RouteNote.Text = "HTTPS 验证有响应；账号与 WebSocket 仍需实际使用确认。";
+            }
+            else if (candidates.Count == 0)
+            {
+                automaticRoute = null;
+                ModeBox.SelectedIndex = 1; RefreshSelection();
+                StatusText.Text = "自动检测未找到可用代理";
+                RouteNote.Text = "请填写自定义 HTTP 代理，或手动选择直连 / TUN。当前已应用的出口保持不变。";
+            }
+            else
+            {
+                StatusText.Text = "发现多个有 HTTPS 响应的代理";
+                var panel = new StackPanel { Margin = new Thickness(16) };
+                panel.Children.Add(new TextBlock { Text = "请选择出口；选择后点击应用到新连接。", TextWrapping = TextWrapping.Wrap });
+                var window = new Window { Title = "选择自动发现的代理", Width = 460, Height = 320, Owner = this, Content = new ScrollViewer { Content = panel }, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+                foreach (var candidate in candidates)
+                {
+                    var button = new Button { Content = candidate.ProcessName + " · " + candidate.Address, Margin = new Thickness(0,4,0,4) };
+                    button.Click += (_, _) => { automaticRoute = Route.ParseProxy(candidate.Address); ModeBox.SelectedIndex = 0; RefreshSelection(); window.Close(); };
+                    panel.Children.Add(button);
+                }
+                window.Show();
+            }
+        }
+        catch (Exception ex) { StatusText.Text = "自动发现失败"; RouteNote.Text = ex.Message; Log("Automatic discovery failed: " + ex.Message); }
+        finally
+        {
+            detecting = busy = false;
+            ModeBox.IsEnabled = AddressBox.IsEnabled = CheckButton.IsEnabled = DiscoverButton.IsEnabled = true;
+            ApplyButton.IsEnabled = changed; UpdateProcessState();
+        }
+    }
+    private async void DiscoverClick(object sender, RoutedEventArgs e) => await DetectAutomaticAsync(false);
     private async void CheckClick(object sender, RoutedEventArgs e)
     {
         if (preview || busy) return;
-        busy = true; CheckButton.IsEnabled = false;
+        if (!entryReady) { StatusText.Text = "入口尚未就绪"; RouteNote.Text = "没有发起网络检测，请查看入口启动记录。"; Log("Probe skipped: entry not ready"); return; }
+        if (!applied || changed) { StatusText.Text = "所选出口尚未应用"; RouteNote.Text = "请点击应用到新连接，再检查链路；本次未发起网络请求。"; Log("Probe skipped: selected route not applied"); return; }
+        busy = true; CheckButton.IsEnabled = ApplyButton.IsEnabled = ModeBox.IsEnabled = AddressBox.IsEnabled = DiscoverButton.IsEnabled = false;
         StatusText.Text = "正在检查 Relay 转发链路…";
         try
         {
-            if (!entryReady || !applied || changed) throw new InvalidOperationException("请先应用出口，再检查实际转发链路。");
             using var handler = new HttpClientHandler { UseProxy = true, AllowAutoRedirect = false, Proxy = new WebProxy($"http://127.0.0.1:{relay.Port}") };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
             using var request = new HttpRequestMessage(HttpMethod.Head, "https://chatgpt.com/") { Version = HttpVersion.Version11, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
@@ -259,16 +345,26 @@ public partial class MainWindow : Window
             RouteNote.Text = "已通过固定入口验证 HTTPS 转发；账号与 Desktop WebSocket 尚需实际请求验证。";
             Log("HTTPS end-to-end probe via relay received HTTP " + (int)response.StatusCode);
         }
-        catch (Exception ex) { StatusText.Text = "Relay 链路检测失败"; RouteNote.Text = "请先应用出口，并检查诊断记录中的失败阶段。"; Log("HTTPS end-to-end probe failed: " + ex.GetType().Name); }
-        finally { busy = false; CheckButton.IsEnabled = true; UpdateProcessState(); }
+        catch (Exception ex)
+        {
+            StatusText.Text = ex is OperationCanceledException ? "HTTPS 检测超时（15 秒）" : "HTTPS 链路检测失败";
+            RouteNote.Text = ex is OperationCanceledException ? "已应用出口，但 15 秒内未收到响应；详见诊断记录。" : ex.Message;
+            for (Exception? cause = ex; cause != null; cause = cause.InnerException)
+                Log("HTTPS end-to-end probe failed: " + cause.GetType().Name + " HResult=" + cause.HResult + ": " + cause.Message);
+        }
+        finally { busy = false; CheckButton.IsEnabled = ModeBox.IsEnabled = AddressBox.IsEnabled = DiscoverButton.IsEnabled = true; ApplyButton.IsEnabled = changed; UpdateProcessState(); }
     }
     private void SetView(string mode)
     {
-        view = mode is "capsule" or "pet" ? "capsule" : "expanded";
+        string nextView = mode is "capsule" or "pet" ? "capsule" : "expanded";
+        if (IsLoaded && view == "capsule" && nextView == "expanded") capsuleAnchor.Remember(Left, Top);
+        bool restoreCapsule = IsLoaded && view == "expanded" && nextView == "capsule";
+        view = nextView;
         Card.Visibility = view == "expanded" ? Visibility.Visible : Visibility.Collapsed;
         Capsule.Visibility = view == "capsule" ? Visibility.Visible : Visibility.Collapsed;
         Width = view == "expanded" ? 304 : 250;
-        Height = view == "expanded" ? 414 : 78;
+        Height = view == "expanded" ? 454 : 78;
+        if (restoreCapsule) { var anchor = capsuleAnchor.Restore(Left, Top); Left = anchor.Left; Top = anchor.Top; }
         settings.View = view;
         if (IsLoaded) { KeepVisible(); Save(); }
     }
@@ -298,7 +394,7 @@ public partial class MainWindow : Window
     {
         var element = e.OriginalSource as DependencyObject;
         while (element != null) { if (element is System.Windows.Controls.Primitives.ButtonBase || element is TextBox || element is ComboBox) return; element = System.Windows.Media.VisualTreeHelper.GetParent(element); }
-        if (e.LeftButton == MouseButtonState.Pressed) { DragMove(); KeepVisible(); Save(); }
+        if (e.LeftButton == MouseButtonState.Pressed) { DragMove(); KeepVisible(); if (view == "capsule") capsuleAnchor.Remember(Left, Top); Save(); }
     }
     private void DetailsClick(object sender, RoutedEventArgs e) => ShowDetails();
     private void ShowDetails()

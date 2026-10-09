@@ -137,6 +137,8 @@ public sealed class RelayServer : IAsyncDisposable
         } catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ArgumentException or ObjectDisposedException) {
             string cause = ex is SocketException socket ? $"socket={socket.SocketErrorCode}" : ex is OperationCanceledException ? (stop.IsCancellationRequested ? "cancel=shutdown" : "cancel=handshake-deadline") : "";
             SafeLog($"Connection failed id={id} generation={generation} phase={phase} elapsedMs={clock.ElapsedMilliseconds} upstreamStatus={upstreamStatus?.ToString() ?? "none"} {cause}: {ex.GetType().Name}");
+            for (Exception? inner = ex.InnerException; inner != null; inner = inner.InnerException)
+                SafeLog($"Connection cause id={id} type={inner.GetType().Name} hresult={inner.HResult}" + (inner is SocketException innerSocket ? $" socket={innerSocket.SocketErrorCode} native={innerSocket.NativeErrorCode}" : ""));
             if (!committed && !stop.IsCancellationRequested) try { using var error = new CancellationTokenSource(TimeSpan.FromSeconds(1)); await WriteAsync(downstream, $"HTTP/1.1 {(parsed ? "502 Bad Gateway" : "400 Bad Request")}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", error.Token); } catch { }
         }
         finally { SafeLog($"Connection end id={id} generation={generation} phase={phase} elapsedMs={clock.ElapsedMilliseconds}"); }
